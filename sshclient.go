@@ -9,6 +9,8 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -372,6 +374,73 @@ func (rs *RemoteShell) Start() error {
 			return err
 		}
 	}
+
+	if err := session.Shell(); err != nil {
+		return err
+	}
+
+	if err := session.Wait(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Start starts a remote shell on client.
+func (rs *RemoteShell) StartWithControl() error {
+	session, err := rs.client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	if rs.stdin == nil {
+		session.Stdin = os.Stdin
+	} else {
+		session.Stdin = rs.stdin
+	}
+	if rs.stdout == nil {
+		session.Stdout = os.Stdout
+	} else {
+		session.Stdout = rs.stdout
+	}
+	if rs.stderr == nil {
+		session.Stderr = os.Stderr
+	} else {
+		session.Stderr = rs.stderr
+	}
+
+	if rs.requestPty {
+		tc := rs.terminalConfig
+		if tc == nil {
+			tc = &TerminalConfig{
+				Term:   "xterm",
+				Height: 40,
+				Weight: 80,
+			}
+		}
+		if err := session.RequestPty(tc.Term, tc.Height, tc.Weight, tc.Modes); err != nil {
+			return err
+		}
+	}
+
+	sigChannel := make(chan os.Signal)
+	signal.Notify(sigChannel, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for {
+			sig, ok := <-sigChannel
+			if !ok {
+				break
+			}
+
+			switch sig {
+			case syscall.SIGINT:
+				session.Signal(ssh.SIGINT)
+			case syscall.SIGTERM:
+				session.Signal(ssh.SIGTERM)
+			}
+		}
+	}()
 
 	if err := session.Shell(); err != nil {
 		return err
